@@ -74,4 +74,78 @@ if st.button("🚀 Optimize & Analyze"):
             ef.add_constraint(lambda w: w <= max_weight)
             weights = pd.Series(ef.min_volatility())
         elif "High" in risk_level:
-            ef = EfficientFrontier(mu, S
+            ef = EfficientFrontier(mu, S)
+            ef.add_constraint(lambda w: w <= max_weight)
+            weights = pd.Series(ef.max_sharpe())
+        else:
+            hrp = HRPOpt(returns_sel)
+            weights = pd.Series(hrp.optimize())
+            # Apply manual capping to HRP for consistency
+            weights = (weights.clip(upper=max_weight) / (weights.clip(upper=max_weight).sum()))
+
+        weights = weights.sort_values(ascending=False)
+
+        # 4. KPI Calculation
+        port_return = np.dot(weights, mu)
+        port_vol = np.sqrt(np.dot(weights.T, np.dot(S, weights)))
+        sharpe = (port_return - 0.02) / port_vol
+
+        # --- DISPLAY KPI SECTION ---
+        st.write("### 🔑 Portfolio Statistics")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Expected Annual Return", f"{port_return:.2%}")
+        m2.metric("Annual Volatility", f"{port_vol:.2%}")
+        m3.metric("Sharpe Ratio", f"{sharpe:.2f}")
+
+        # --- CHARTS SECTION ---
+        st.divider()
+        c1, c2 = st.columns([2, 1])
+        
+        with c1:
+            st.write("### 📈 Strategy Performance vs. Benchmark")
+            port_daily_ret = (returns_sel * weights).sum(axis=1)
+            spy_daily_ret = spy_prices.pct_change().dropna()
+            common_dates = port_daily_ret.index.intersection(spy_daily_ret.index)
+            
+            cum_port = (1 + port_daily_ret.loc[common_dates]).cumprod()
+            cum_spy = (1 + spy_daily_ret.loc[common_dates]).cumprod()
+            
+            comp_df = pd.DataFrame({"Your Strategy": cum_port, "S&P 500 (SPY)": cum_spy})
+            fig = px.line(comp_df, labels={"value": "Growth of $1", "Date": "Year"})
+            st.plotly_chart(fig, use_container_width=True)
+
+        with c2:
+            st.write("### 🏆 Top Weights")
+            weight_df = pd.DataFrame({
+                "Ticker": weights.index, 
+                "Weight (%)": (weights.values * 100).round(2)
+            }).sort_values("Weight (%)", ascending=False)
+            st.dataframe(weight_df, height=400, hide_index=True)
+
+        # --- REINFORCED NEWS SECTION ---
+        st.divider()
+        st.write("### 📰 Latest News for Top Holdings")
+        
+        top_3 = weights.head(3).index.tolist()
+        news_cols = st.columns(3)
+        
+        for i, ticker in enumerate(top_3):
+            with news_cols[i]:
+                st.subheader(f"{ticker}")
+                try:
+                    news_data = yf.Ticker(ticker).news
+                    if news_data:
+                        for item in news_data[:2]:
+                            title = item.get('title', 'News Update')
+                            link = item.get('link', '#')
+                            publisher = item.get('publisher', 'Finance Source')
+                            st.markdown(f"**[{title}]({link})**")
+                            st.caption(f"Source: {publisher}")
+                    else:
+                        st.write("No recent news available.")
+                except:
+                    st.write("Unable to sync live feed.")
+
+        st.success(f"Optimization Complete: {risk_level} profile applied.")
+else:
+    st.info("👈 Use the sidebar to set your parameters and click 'Optimize & Analyze' to begin.")
