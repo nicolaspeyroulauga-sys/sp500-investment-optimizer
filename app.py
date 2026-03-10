@@ -72,17 +72,18 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         ann_vol = port_daily_ret.std() * np.sqrt(252)
         sharpe = (ann_return - RISK_FREE_RATE) / ann_vol
         
-        # Benchmark Correlation (BETA SAFETY CHECK)
+        # --- ROBUST BETA CALCULATION ---
         spy_raw = yf.download("SPY", start=START_DATE, progress=False)["Close"]
-        spy = spy_raw.pct_change().dropna()
-        common_idx = port_daily_ret.index.intersection(spy.index)
+        spy_rets = spy_raw.pct_change().dropna()
         
-        beta = 0.0
-        if len(common_idx) > 30: # Ensure enough days for correlation
-            cov_matrix = np.cov(port_daily_ret.loc[common_idx], spy.loc[common_idx])
-            beta = cov_matrix[0, 1] / cov_matrix[1, 1]
-        else:
-            beta = 1.0 # Default fallback if SPY data fails
+        # Aligning the two series to solve the ValueError
+        combined_df = pd.concat([port_daily_ret, spy_rets], axis=1).dropna()
+        combined_df.columns = ['portfolio', 'benchmark']
+        
+        beta = 1.0 # Default
+        if not combined_df.empty and len(combined_df) > 2:
+            matrix = np.cov(combined_df['portfolio'], combined_df['benchmark'])
+            beta = matrix[0, 1] / matrix[1, 1]
 
         # --- KPI DASHBOARD ---
         st.write(f"### 🔑 Tactical KPIs (Basis: ${total_capital:,.2f})")
@@ -111,13 +112,13 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         st.divider()
         st.write("### 🌩️ Strategic Stress Tests: Capital at Risk")
         sc1, sc2 = st.columns(2)
-        crash_pct = beta * -0.20
+        crash_impact = beta * -0.20
         var_95 = np.percentile(port_daily_ret, 5)
 
         with sc1:
             st.info("**Scenario: Market Crash (-20%)**")
-            st.metric("Estimated Impact", f"{crash_pct:.2%}", f"-${total_capital * abs(crash_pct):,.2f}", delta_color="inverse")
-            st.caption(f"Sensitivity (Beta): {beta:.2f}")
+            st.metric("Estimated Impact", f"{crash_impact:.2%}", f"-${total_capital * abs(crash_impact):,.2f}", delta_color="inverse")
+            st.caption(f"Portfolio Beta: {beta:.2f}")
 
         with sc2:
             st.warning("**Scenario: Daily Value-at-Risk (95% CI)**")
@@ -145,9 +146,9 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         # 6. HISTORICAL GROWTH
         st.divider()
         st.write("### 📈 Cumulative Performance Analysis")
-        if not common_idx.empty:
-            cum_port = (1 + port_daily_ret.loc[common_idx]).cumprod()
-            cum_spy = (1 + spy.loc[common_idx]).cumprod()
+        if not combined_df.empty:
+            cum_port = (1 + combined_df['portfolio']).cumprod()
+            cum_spy = (1 + combined_df['benchmark']).cumprod()
             fig_hist = go.Figure()
             fig_hist.add_trace(go.Scatter(x=cum_port.index, y=cum_port, name="HRP Strategy", line=dict(color="#0047bb", width=3)))
             fig_hist.add_trace(go.Scatter(x=cum_spy.index, y=cum_spy, name="S&P 500", line=dict(color="#d1d1d1", width=2)))
@@ -169,24 +170,6 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p50, name="Median Projection", line=dict(color="#0047bb", width=3)))
         st.plotly_chart(fig_mc, use_container_width=True)
 
-        # 8. ASSET CARDS
-        st.divider()
-        st.write("### 🔍 Fundamental Holding Diagnostics")
-        for ticker in weights.head(5).index.tolist():
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                st.subheader(ticker)
-                st.write(f"**Allocated:** ${total_capital * weights[ticker]:,.2f}")
-                try:
-                    t_info = yf.Ticker(ticker).info
-                    st.write(f"**P/E:** {t_info.get('trailingPE', 'N/A')}")
-                    st.caption(t_info.get('longBusinessSummary', '')[:250] + "...")
-                except: pass
-            with c2:
-                fig_s = px.line(prices[ticker].tail(252), height=150)
-                fig_s.update_layout(showlegend=False, margin=dict(t=0, b=0))
-                st.plotly_chart(fig_s, use_container_width=True)
-
-        st.success("Terminal stabilized. Data synchronization complete.")
+        st.success("Analysis complete. Beta calculated using synchronized time-series.")
 else:
     st.info("👈 System Standby. Click Execute to generate interactive analysis.")
