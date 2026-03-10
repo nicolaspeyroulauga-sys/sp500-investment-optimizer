@@ -11,7 +11,7 @@ st.set_page_config(page_title="Quantum Portfolio Terminal", layout="wide")
 
 # --- HEADER ---
 st.title("🏛️ Institutional Quantitative Research Terminal")
-st.markdown("**Lead Developer: Nicolas Peyrou-Lauga** | Portfolio Engineering & Risk Management")
+st.markdown("**Lead Developer: Nicolas Peyrou-Lauga** | Portfolio Engineering & Management")
 
 # --- SIDEBAR ---
 st.sidebar.header("1. Portfolio Capitalization")
@@ -20,7 +20,7 @@ total_capital = st.sidebar.number_input(
     min_value=1.0, 
     value=10000.0, 
     step=100.0, 
-    help="Enter the total fiat value of the current portfolio for rebalancing and projection scaling."
+    help="Enter the total fiat value for rebalancing and projection scaling."
 )
 
 st.sidebar.header("2. Strategy Settings")
@@ -34,7 +34,7 @@ risk_level = st.sidebar.select_slider(
     value="Medium (Balanced HRP)"
 )
 
-# Constants
+# FIXED UNIVERSE - EXACTLY AS PER YOUR RESEARCH
 START_DATE = "2020-01-01"
 RISK_FREE_RATE = 0.02
 UNIVERSE = ["AAPL","MSFT","GOOG","AMZN","NVDA","META","JPM","V","MA","UNH","HD","XOM","AVGO","COST","PEP","ABBV","KO","MRK","BAC","PFE","TMO","CSCO","ADBE","CRM","WMT","MCD","QCOM","ORCL","TXN","INTC"]
@@ -42,15 +42,16 @@ UNIVERSE = ["AAPL","MSFT","GOOG","AMZN","NVDA","META","JPM","V","MA","UNH","HD",
 if st.button("🚀 Execute Full Institutional Analysis"):
     with st.spinner("Processing Market Data, Optimizing, and Simulating Scenarios..."):
         
-        # 1. DATA CORE (CRASH-PROOFED)
+        # 1. DATA CORE
         all_tickers = UNIVERSE + ["SPY"]
         data = yf.download(all_tickers, start=START_DATE, progress=False)["Close"]
         
         available_tickers = [t for t in UNIVERSE if t in data.columns]
         prices = data[available_tickers].dropna(axis=1)
         spy_prices = data["SPY"].dropna()
+        current_prices = prices.iloc[-1] # For share calculations
         
-        # 2. FACTOR SELECTION (MOMENTUM & QUALITY)
+        # 2. FACTOR SELECTION (EXACT COLAB LOGIC)
         returns = prices.pct_change().dropna()
         momentum = prices.shift(21).pct_change(252).iloc[-1]
         vol_vec = returns.std() * np.sqrt(252)
@@ -99,6 +100,25 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         m3.metric("Sharpe Ratio", f"{sharpe:.2f}")
         m4.metric("Portfolio Beta", f"{beta:.2f}")
 
+        # --- NEW: EXECUTION & ALLOCATION TABLE ---
+        st.divider()
+        st.write("### 📋 Trade Execution & Asset Allocation")
+        
+        # Calculate table values
+        alloc_df = pd.DataFrame(weights, columns=["Weight"])
+        alloc_df["Investment ($)"] = alloc_df["Weight"] * total_capital
+        alloc_df["Current Price ($)"] = current_prices[selected]
+        alloc_df["Shares to Buy"] = (alloc_df["Investment ($)"] / alloc_df["Current Price ($)"]).apply(np.floor)
+        
+        # Formatting for display
+        display_df = alloc_df.copy()
+        display_df["Weight"] = display_df["Weight"].map("{:.2%}".format)
+        display_df["Investment ($)"] = display_df["Investment ($)"].map("${:,.2f}".format)
+        display_df["Current Price ($)"] = display_df["Current Price ($)"].map("${:,.2f}".format)
+        display_df["Shares to Buy"] = display_df["Shares to Buy"].astype(int)
+        
+        st.table(display_df)
+
         # 5. EFFICIENT FRONTIER VISUALIZATION
         st.divider()
         st.write("### 🌌 The Efficient Frontier & Strategy Placement")
@@ -112,7 +132,7 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         
         fig_ef = go.Figure()
         fig_ef.add_trace(go.Scatter(x=p_vol, y=p_ret, mode='markers', name='Random Portfolios', marker=dict(color='lightgrey', size=5, opacity=0.5)))
-        fig_ef.add_trace(go.Scatter(x=[ann_vol], y=[ann_return], mode='markers', name='Optimized Portfolio', marker=dict(color='#0047bb', size=15, symbol='star')))
+        fig_ef.add_trace(go.Scatter(x=[ann_vol], y=[ann_return], mode='markers', name='Your Optimized Portfolio', marker=dict(color='#0047bb', size=15, symbol='star')))
         fig_ef.update_layout(xaxis_title="Annualized Volatility", yaxis_title="Annualized Return")
         st.plotly_chart(fig_ef, use_container_width=True)
 
@@ -126,12 +146,10 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         with sc1:
             st.info("**Scenario: Market Crash (-20%)**")
             st.metric("Estimated Impact", f"{crash_pct:.2%}", f"-${total_capital * abs(crash_pct):,.2f}", delta_color="inverse")
-            st.caption(f"Portfolio Sensitivity (Beta): {beta:.2f}")
 
         with sc2:
             st.warning("**Scenario: Daily Value-at-Risk (95% CI)**")
             st.metric("95% Daily Floor", f"{var_95:.2%}", f"-${total_capital * abs(var_95):,.2f}", delta_color="inverse")
-            st.caption("Maximum likely loss in a single trading day.")
 
         fig_risk = px.histogram(port_daily_ret, nbins=100, title="Historical Daily Returns & Tail Risk", labels={'value': 'Daily Return %'}, color_discrete_sequence=['#0047bb'])
         fig_risk.add_vline(x=var_95, line_dash="dash", line_color="red", annotation_text=f"VaR Line")
@@ -139,7 +157,7 @@ if st.button("🚀 Execute Full Institutional Analysis"):
 
         # 7. CORRELATION & SECTOR ANALYSIS
         st.divider()
-        t1, t2, t3 = st.tabs(["Performance History", "Correlation Heatmap", "Sector Exposure"])
+        t1, t2, t3 = st.tabs(["Performance History", "Correlation Heatmap", "Sector Exposure Map"])
         
         with t1:
             cum_port = (1 + port_daily_ret.loc[common_idx]).cumprod()
@@ -149,7 +167,6 @@ if st.button("🚀 Execute Full Institutional Analysis"):
             fig_hist.add_trace(go.Scatter(x=cum_spy.index, y=cum_spy, name="S&P 500", line=dict(color="#d1d1d1", width=2)))
             st.plotly_chart(fig_hist, use_container_width=True)
             
-            # Drawdown Calculation
             rolling_max = cum_port.expanding().max()
             drawdowns = (cum_port - rolling_max) / rolling_max
             st.write(f"**Historical Maximum Drawdown:** {drawdowns.min():.2%}")
@@ -202,6 +219,6 @@ if st.button("🚀 Execute Full Institutional Analysis"):
                 fig_s.update_layout(showlegend=False, margin=dict(t=0, b=0), yaxis_title="Price")
                 st.plotly_chart(fig_s, use_container_width=True)
 
-        st.success("Analysis Complete.")
+        st.success("Research Engine Synchronized with Google Colab Data.")
 else:
     st.info("👈 Configuration ready. Execute analysis to begin.")
