@@ -7,50 +7,57 @@ import plotly.graph_objects as go
 from pypfopt import expected_returns, risk_models, HRPOpt, EfficientFrontier
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Quantum Portfolio Terminal Pro", layout="wide")
+st.set_page_config(page_title="Quantum Portfolio Research Terminal", layout="wide")
 
 # --- HEADER ---
-st.title("🏛️ Institutional Portfolio Terminal")
-st.markdown("**Lead Developer: Nicolas Peyrou-Lauga** | Quantitative Investment Analysis")
+st.title("🏛️ Quantitative Portfolio Research Terminal")
+st.markdown("**Lead Developer: Nicolas Peyrou-Lauga** | Master's in Finance Candidate")
 
 # --- SIDEBAR ---
-st.sidebar.header("1. Strategy Settings")
-investment_amount = st.sidebar.number_input("Initial Investment ($)", min_value=1000, value=10000, step=1000)
-n_stocks = st.sidebar.slider("Number of Stocks", 10, 30, 20)
-max_weight = st.sidebar.slider("Max Weight (%)", 5, 20, 10) / 100
+st.sidebar.header("1. Analysis Parameters")
+n_stocks = st.sidebar.slider("Number of Top Assets", 10, 30, 25)
+max_weight = st.sidebar.slider("Max Weight per Asset (%)", 5, 20, 10) / 100
 
-st.sidebar.header("2. Risk Profile")
+st.sidebar.header("2. Risk Configuration")
 risk_level = st.sidebar.select_slider(
-    "Select Strategy Profile",
-    options=["Conservative (Min Vol)", "Balanced (HRP)", "Aggressive (Max Sharpe)"],
-    value="Balanced (HRP)"
+    "Optimization Strategy",
+    options=["Low (Min Variance)", "Medium (Balanced HRP)", "High (Max Sharpe)"],
+    value="Medium (Balanced HRP)"
 )
 
-# Asset Universe
+# Using your original 2020 start date for consistency
+START_DATE = "2020-01-01"
+
 UNIVERSE = ["AAPL","MSFT","GOOG","AMZN","NVDA","META","JPM","V","MA","UNH","HD","XOM","AVGO","COST","PEP","ABBV","KO","MRK","BAC","PFE","TMO","CSCO","ADBE","CRM","WMT","MCD","QCOM","ORCL","TXN","INTC"]
 
-if st.button("🚀 Execute Quantitative Analysis"):
-    with st.spinner("Analyzing Market Dynamics..."):
+if st.button("🚀 Run Full Optimization & Forecast"):
+    with st.spinner("Crunching Numbers & Simulating Paths..."):
         
-        # 1. DATA & OPTIMIZATION
+        # 1. DATA ACQUISITION
         all_tickers = UNIVERSE + ["SPY"]
-        data = yf.download(all_tickers, start="2021-01-01", progress=False)["Close"].dropna(axis=1)
-        prices, spy_prices = data[UNIVERSE], data["SPY"]
+        data = yf.download(all_tickers, start=START_DATE, progress=False)["Close"].dropna(axis=1)
+        prices = data[UNIVERSE]
+        spy_prices = data["SPY"]
+        
+        # 2. STRATEGY BRAIN (Momentum/Quality Ranking)
         returns = prices.pct_change().dropna()
+        momentum = prices.shift(21).pct_change(252).iloc[-1]
+        vol_vec = returns.std() * np.sqrt(252)
+        factor_df = pd.DataFrame({
+            "mom": momentum.rank(ascending=False),
+            "qual": (momentum/vol_vec).rank(ascending=False)
+        }).dropna()
+        factor_df["avg_rank"] = (factor_df["mom"] + factor_df["qual"]) / 2
+        selected = factor_df.sort_values("avg_rank").head(n_stocks).index.tolist()
         
-        # Factor selection logic
-        mom = prices.shift(21).pct_change(252).iloc[-1]
-        vol = returns.std() * np.sqrt(252)
-        factor_df = pd.DataFrame({"rank": (mom.rank(ascending=False) + (mom/vol).rank(ascending=False))/2})
-        selected = factor_df.sort_values("rank").head(n_stocks).index.tolist()
-        
+        # 3. OPTIMIZATION ENGINE
         mu = expected_returns.mean_historical_return(prices[selected])
         S = risk_models.CovarianceShrinkage(prices[selected]).ledoit_wolf()
 
-        if "Conservative" in risk_level:
+        if "Low" in risk_level:
             ef = EfficientFrontier(mu, S); ef.add_constraint(lambda w: w <= max_weight)
             weights = pd.Series(ef.min_volatility())
-        elif "Aggressive" in risk_level:
+        elif "High" in risk_level:
             ef = EfficientFrontier(mu, S); ef.add_constraint(lambda w: w <= max_weight)
             weights = pd.Series(ef.max_sharpe())
         else:
@@ -59,64 +66,76 @@ if st.button("🚀 Execute Quantitative Analysis"):
 
         weights = weights.sort_values(ascending=False)
 
-        # 2. MONTE CARLO SIMULATION (The "Pro" Feature)
-        st.write("### 🔮 Monte Carlo Risk Projection (1-Year)")
+        # 4. HISTORICAL PERFORMANCE VS BENCHMARK
+        st.write("### 📈 Portfolio Growth vs. S&P 500 (Historical)")
+        port_daily_ret = (returns[selected] * weights).sum(axis=1)
+        spy_daily_ret = spy_prices.pct_change().dropna()
+        common_idx = port_daily_ret.index.intersection(spy_daily_ret.index)
         
-        # Simulating 100 paths
-        n_sims = 100
+        cum_port = (1 + port_daily_ret.loc[common_idx]).cumprod()
+        cum_spy = (1 + spy_daily_ret.loc[common_idx]).cumprod()
+        
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Scatter(x=cum_port.index, y=cum_port, name="Optimized Portfolio", line=dict(color="#0047bb", width=3)))
+        fig_hist.add_trace(go.Scatter(x=cum_spy.index, y=cum_spy, name="S&P 500 (Benchmark)", line=dict(color="#d1d1d1", width=2)))
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+        # 5. DETAILED MONTE CARLO (1-Year Probability Cone)
+        st.divider()
+        st.write("### 🔮 Monte Carlo Simulation (1,000 Iterations)")
+        
+        n_sims = 1000
         n_days = 252
-        port_ret_avg = np.dot(weights, mu) / 252
-        port_vol_avg = np.sqrt(np.dot(weights.T, np.dot(S, weights))) / np.sqrt(252)
+        mean_ret = port_daily_ret.mean()
+        std_dev = port_daily_ret.std()
         
-        sim_results = np.zeros((n_days, n_sims))
+        # Simulating paths
+        sim_paths = np.zeros((n_days, n_sims))
         for i in range(n_sims):
-            daily_sim_rets = np.random.normal(port_ret_avg, port_vol_avg, n_days)
-            sim_results[:, i] = investment_amount * (1 + daily_sim_rets).cumprod()
+            daily_rets = np.random.normal(mean_ret, std_dev, n_days)
+            sim_paths[:, i] = 100 * (1 + daily_rets).cumprod() # Starting at base 100
         
-        # Charting MC
+        # Calculate Percentiles for the "Cone"
+        p5 = np.percentile(sim_paths, 5, axis=1)
+        p50 = np.percentile(sim_paths, 50, axis=1)
+        p95 = np.percentile(sim_paths, 95, axis=1)
+        
         fig_mc = go.Figure()
-        for i in range(n_sims):
-            fig_mc.add_trace(go.Scatter(y=sim_results[:, i], mode='lines', line=dict(width=1), opacity=0.1, showlegend=False))
+        # The Cone (Shaded Area)
+        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p95, mode='lines', line=dict(width=0), showlegend=False))
+        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p5, mode='lines', line=dict(width=0), fill='tonexty', fillcolor='rgba(0, 71, 187, 0.1)', name="90% Confidence Interval"))
+        # Median Line
+        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p50, name="Median Path", line=dict(color="#0047bb", width=3)))
         
-        # Highlighting the Median Path
-        fig_mc.add_trace(go.Scatter(y=np.median(sim_results, axis=1), name="Median Expectation", line=dict(color='red', width=3)))
-        fig_mc.update_layout(xaxis_title="Trading Days", yaxis_title="Portfolio Value ($)")
+        fig_mc.update_layout(xaxis_title="Trading Days (Future)", yaxis_title="Growth of $100")
         st.plotly_chart(fig_mc, use_container_width=True)
 
-        # 3. PERFORMANCE DASHBOARD
+        # 6. ASSET ANALYSIS & INDIVIDUAL GRAPHS
         st.divider()
-        c1, c2, c3 = st.columns(3)
+        st.write("### 🔍 Fundamental Insights & Performance: Top Assets")
+        top_assets = weights.head(5).index.tolist()
         
-        # Calculate VaR (Value at Risk 95%)
-        daily_rets = (returns[selected] * weights).sum(axis=1)
-        var_95 = np.percentile(daily_rets, 5)
-        
-        c1.metric("Expected Annual Return", f"{np.dot(weights, mu):.2%}")
-        c2.metric("Annual Volatility", f"{np.sqrt(np.dot(weights.T, np.dot(S, weights))):.2%}")
-        c3.metric("Daily Value-at-Risk (95%)", f"{var_95:.2%}", help="The potential loss in a single day with 95% confidence.")
+        for ticker in top_assets:
+            col_text, col_graph = st.columns([1, 2])
+            with col_text:
+                try:
+                    t_obj = yf.Ticker(ticker)
+                    info = t_obj.info
+                    st.subheader(f"{ticker}")
+                    st.write(f"**Weight:** {weights[ticker]*100:.2f}%")
+                    st.write(f"**Market Cap:** ${info.get('marketCap', 0)/1e9:.1f}B")
+                    st.write(f"**P/E Ratio:** {info.get('trailingPE', 'N/A')}")
+                    st.write(f"**Forward Div:** {info.get('dividendYield', 0)*100:.2f}%")
+                    st.caption(info.get('longBusinessSummary', '')[:300] + "...")
+                except:
+                    st.write("Fundamental data fetch failed.")
+            
+            with col_graph:
+                # Individual stock price graph for the last year
+                stock_hist = prices[ticker].tail(252)
+                fig_stock = px.line(stock_hist, title=f"{ticker} - 1 Year Price Action", labels={"value": "Price", "Date": ""})
+                fig_stock.update_layout(height=300, showlegend=False)
+                st.plotly_chart(fig_stock, use_container_width=True)
+            st.markdown("---")
 
-        # 4. REBALANCING TABLE (The "Actionable" Feature)
-        st.write("### 📝 Execution: Buy List & Rebalancing")
-        latest_prices = prices[selected].iloc[-1]
-        rebalance_df = pd.DataFrame({
-            "Ticker": weights.index,
-            "Target Weight (%)": (weights.values * 100).round(2),
-            "Allocation ($)": (weights.values * investment_amount).round(2),
-            "Shares to Buy": ((weights.values * investment_amount) / latest_prices).astype(int)
-        })
-        st.table(rebalance_df)
-
-        # 5. FUNDAMENTAL DEEP-DIVE
-        st.divider()
-        st.write("### 🔍 Fundamental Insights")
-        top_3 = weights.head(3).index.tolist()
-        f_cols = st.columns(3)
-        for i, t in enumerate(top_3):
-            with f_cols[i]:
-                info = yf.Ticker(t).info
-                st.subheader(f"{t}")
-                st.write(f"**Sector:** {info.get('sector', 'N/A')}")
-                st.write(f"**P/E Ratio:** {info.get('trailingPE', 'N/A')}")
-                st.write(f"**Profit Margin:** {info.get('profitMargins', 0)*100:.1f}%")
-
-        st.success("Analysis Complete. Terminal Ready for Execution.")
+        st.success(f"Strategy Optimization Successfully Deployed via {risk_level}")
