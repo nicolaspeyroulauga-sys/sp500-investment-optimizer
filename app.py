@@ -49,9 +49,9 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         available_tickers = [t for t in UNIVERSE if t in data.columns]
         prices = data[available_tickers].dropna(axis=1)
         spy_prices = data["SPY"].dropna()
-        current_prices = prices.iloc[-1] # For share calculations
+        current_prices = prices.iloc[-1] 
         
-        # 2. FACTOR SELECTION (EXACT COLAB LOGIC)
+        # 2. FACTOR SELECTION
         returns = prices.pct_change().dropna()
         momentum = prices.shift(21).pct_change(252).iloc[-1]
         vol_vec = returns.std() * np.sqrt(252)
@@ -100,22 +100,23 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         m3.metric("Sharpe Ratio", f"{sharpe:.2f}")
         m4.metric("Portfolio Beta", f"{beta:.2f}")
 
-        # --- NEW: EXECUTION & ALLOCATION TABLE ---
+        # --- UPDATED: EXECUTION & ALLOCATION TABLE (FRACTIONAL SHARES) ---
         st.divider()
         st.write("### 📋 Trade Execution & Asset Allocation")
         
-        # Calculate table values
         alloc_df = pd.DataFrame(weights, columns=["Weight"])
         alloc_df["Investment ($)"] = alloc_df["Weight"] * total_capital
         alloc_df["Current Price ($)"] = current_prices[selected]
-        alloc_df["Shares to Buy"] = (alloc_df["Investment ($)"] / alloc_df["Current Price ($)"]).apply(np.floor)
+        # Removed np.floor to allow fractional shares
+        alloc_df["Shares to Buy"] = alloc_df["Investment ($)"] / alloc_df["Current Price ($)"]
         
-        # Formatting for display
+        # Formatting for clear display
         display_df = alloc_df.copy()
         display_df["Weight"] = display_df["Weight"].map("{:.2%}".format)
         display_df["Investment ($)"] = display_df["Investment ($)"].map("${:,.2f}".format)
         display_df["Current Price ($)"] = display_df["Current Price ($)"].map("${:,.2f}".format)
-        display_df["Shares to Buy"] = display_df["Shares to Buy"].astype(int)
+        # Displaying 3 decimal places for fractional shares
+        display_df["Shares to Buy"] = display_df["Shares to Buy"].map("{:.3f}".format)
         
         st.table(display_df)
 
@@ -219,6 +220,6 @@ if st.button("🚀 Execute Full Institutional Analysis"):
                 fig_s.update_layout(showlegend=False, margin=dict(t=0, b=0), yaxis_title="Price")
                 st.plotly_chart(fig_s, use_container_width=True)
 
-        st.success("Research Engine Synchronized with Google Colab Data.")
+        st.success("Execution Table Updated with Fractional Share Support.")
 else:
     st.info("👈 Configuration ready. Execute analysis to begin.")
