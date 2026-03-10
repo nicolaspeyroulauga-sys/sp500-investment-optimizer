@@ -7,16 +7,21 @@ import plotly.graph_objects as go
 from pypfopt import expected_returns, risk_models, HRPOpt, EfficientFrontier
 
 # --- PAGE CONFIG ---
-st.set_config = st.set_page_config(page_title="Quantum Portfolio Terminal", layout="wide")
+st.set_page_config(page_title="Quantum Portfolio Terminal", layout="wide")
 
 # --- HEADER ---
 st.title("🏛️ Institutional Quantitative Research Terminal")
 st.markdown("**Lead Developer: Nicolas Peyrou-Lauga** | Portfolio Engineering & Management")
 
 # --- SIDEBAR ---
-st.sidebar.header("1. Personal Investment Data")
-# This is the box you requested for your specific capital
-total_capital = st.sidebar.number_input("Current Portfolio Value ($)", min_value=1.0, value=10000.0, step=100.0, help="Enter the exact total amount you and your brother have invested.")
+st.sidebar.header("1. Portfolio Capitalization")
+total_capital = st.sidebar.number_input(
+    "Total Investment Capital ($)", 
+    min_value=1.0, 
+    value=10000.0, 
+    step=100.0, 
+    help="Enter the total fiat value of the current portfolio for rebalancing and projection scaling."
+)
 
 st.sidebar.header("2. Strategy Settings")
 n_stocks = st.sidebar.slider("Number of Assets", 10, 30, 25)
@@ -81,43 +86,64 @@ if st.button("🚀 Update Terminal & Sync Capital"):
         
         cov_matrix = np.cov(port_daily_ret.loc[common_idx], spy_daily_ret.loc[common_idx])
         beta = cov_matrix[0, 1] / cov_matrix[1, 1]
-        alpha = ann_return - (RISK_FREE_RATE + beta * (spy_daily_ret.mean()*252 - RISK_FREE_RATE))
 
         # --- TOP METRICS BAR ---
-        st.write(f"### 🔑 Tactical KPIs (Based on ${total_capital:,.2f} Capital)")
+        st.write(f"### 🔑 Tactical KPIs (Basis: ${total_capital:,.2f})")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Current Portfolio Value", f"${total_capital:,.2f}")
-        m2.metric("Exp. Annual Growth", f"${total_capital * ann_return:,.2f}", f"{ann_return:.2%}")
+        m1.metric("Current Asset Value", f"${total_capital:,.2f}")
+        m2.metric("Projected Annual Growth", f"${total_capital * ann_return:,.2f}", f"{ann_return:.2%}")
         m3.metric("Sharpe Ratio", f"{sharpe:.2f}")
         m4.metric("Portfolio Beta", f"{beta:.2f}")
 
-        # 5. STRESS TESTING
+        # 5. ELABORATED STRESS TESTING
         st.divider()
         st.write("### 🌩️ Strategic Stress Tests: Capital at Risk")
+        
         stress_col1, stress_col2 = st.columns(2)
         
+        # Scenario A: Systematic Shock
+        crash_pct = beta * -0.20
         with stress_col1:
-            crash_pct = beta * -0.20
             st.info("**Scenario: Market Crash (-20%)**")
-            st.write(f"Estimated Portfolio Impact: **{crash_pct:.2%}**")
-            st.write(f"Projected Capital Loss: **-${total_capital * abs(crash_pct):,.2f}**")
+            st.write(f"This simulates a broad S&P 500 collapse. Based on your **Beta of {beta:.2f}**, your portfolio is expected to move {beta:.2f}x for every 1% move in the market.")
+            st.metric("Estimated Impact", f"{crash_pct:.2%}", f"-${total_capital * abs(crash_pct):,.2f}", delta_color="inverse")
+            st.caption("A Beta < 1.0 suggests your portfolio is more defensive than the market.")
 
+        # Scenario B: Daily VaR
+        var_95 = np.percentile(port_daily_ret, 5)
         with stress_col2:
-            var_95 = np.percentile(port_daily_ret, 5)
-            st.warning("**Scenario: Daily Value-at-Risk (95%)**")
-            st.write(f"Worst-case Daily Shift: **{var_95:.2%}**")
-            st.write(f"Daily Capital at Risk: **${total_capital * abs(var_95):,.2f}**")
+            st.warning("**Scenario: Daily Value-at-Risk (95% CI)**")
+            st.write(f"This defines the 'Maximum Likely Loss' in a single day. There is a 95% statistical probability that your daily loss will not exceed this amount.")
+            st.metric("95% Daily Floor", f"{var_95:.2%}", f"-${total_capital * abs(var_95):,.2f}", delta_color="inverse")
+            st.caption("Calculated using the Historical Simulation method over the last 5 years.")
+
+        # --- RISK VISUALIZATION ---
+        st.write("#### 📊 Risk Distribution Analysis")
+        # Creating a histogram of historical returns to show the "Tail Risk"
+        fig_risk = px.histogram(port_daily_ret, nbins=100, 
+                               title="Historical Daily Returns Distribution",
+                               labels={'value': 'Daily Return %'},
+                               color_discrete_sequence=['#0047bb'])
+        
+        # Add a vertical line for VaR
+        fig_risk.add_vline(x=var_95, line_dash="dash", line_color="red", 
+                          annotation_text=f"95% VaR: {var_95:.2%}", 
+                          annotation_position="top left")
+        
+        fig_risk.update_layout(showlegend=False, height=350)
+        st.plotly_chart(fig_risk, use_container_width=True)
+        st.markdown("> **Note:** The red dashed line represents the 'left tail' risk. Any event to the left of this line represents a black-swan or extreme market event occurring in the worst 5% of trading days.")
 
         # 6. PERFORMANCE & SECTOR VIEWS
         st.divider()
-        tab_perf, tab_conc = st.tabs(["Cumulative Growth (Base $1)", "Sector Distribution Heatmap"])
+        tab_perf, tab_conc = st.tabs(["Historical Growth Analysis", "Sector Exposure Map"])
         
         with tab_perf:
             cum_port = (1 + port_daily_ret.loc[common_idx]).cumprod()
             cum_spy = (1 + spy_daily_ret.loc[common_idx]).cumprod()
             fig_hist = go.Figure()
-            fig_hist.add_trace(go.Scatter(x=cum_port.index, y=cum_port, name="Optimized Portfolio", line=dict(color="#0047bb", width=3)))
-            fig_hist.add_trace(go.Scatter(x=cum_spy.index, y=cum_spy, name="S&P 500", line=dict(color="#d1d1d1", width=2)))
+            fig_hist.add_trace(go.Scatter(x=cum_port.index, y=cum_port, name="Optimized Strategy", line=dict(color="#0047bb", width=3)))
+            fig_hist.add_trace(go.Scatter(x=cum_spy.index, y=cum_spy, name="S&P 500 (SPY)", line=dict(color="#d1d1d1", width=2)))
             st.plotly_chart(fig_hist, use_container_width=True)
             
         with tab_conc:
@@ -129,9 +155,9 @@ if st.button("🚀 Update Terminal & Sync Capital"):
             fig_tree = px.treemap(tree_df, path=['Sector', 'Asset'], values='Weight', color='Weight', color_continuous_scale='RdBu')
             st.plotly_chart(fig_tree, use_container_width=True)
 
-        # 7. MONTE CARLO (Future Wealth Projection)
+        # 7. MONTE CARLO
         st.divider()
-        st.write(f"### 🔮 1-Year Future Wealth Projection (Starting at ${total_capital:,.2f})")
+        st.write(f"### 🔮 1-Year Probabilistic Wealth Projection (Scaling from ${total_capital:,.2f})")
         n_sims, n_days = 1000, 252
         sim_paths = np.zeros((n_days, n_sims))
         for i in range(n_sims):
@@ -147,21 +173,23 @@ if st.button("🚀 Update Terminal & Sync Capital"):
 
         # 8. INDIVIDUAL ASSET VALUES
         st.divider()
-        st.write("### 🔍 Your Specific Asset Holdings")
+        st.write("### 🔍 Fundamental Diagnostics & Active Allocations")
         for ticker in weights.head(5).index.tolist():
             col1, col2 = st.columns([1, 2])
             with col1:
                 st.subheader(ticker)
                 asset_value = total_capital * weights[ticker]
-                st.write(f"**Value in Portfolio:** ${asset_value:,.2f}")
-                st.write(f"**Target Weight:** {weights[ticker]*100:.2f}%")
+                st.write(f"**Current Capital Allocation:** ${asset_value:,.2f}")
+                st.write(f"**Optimal Weight:** {weights[ticker]*100:.2f}%")
                 try:
                     t_info = yf.Ticker(ticker).info
                     st.caption(f"Sector: {t_info.get('sector')} | P/E: {t_info.get('trailingPE')}")
                 except: pass
             with col2:
                 fig_s = px.line(prices[ticker].tail(252), height=200)
-                fig_s.update_layout(showlegend=False, margin=dict(t=0, b=0), yaxis_title="Price")
+                fig_s.update_layout(showlegend=False, margin=dict(t=0, b=0), yaxis_title="Price ($)")
                 st.plotly_chart(fig_s, use_container_width=True)
 
-        st.success(f"Capital Sync Complete. Managing ${total_capital:,.2f} across {n_stocks} assets.")
+        st.success(f"Analysis Finalized. Strategy: {risk_level} | Scale: ${total_capital:,.2f}")
+else:
+    st.info("👈 Set your investment parameters and click the button to generate the terminal analysis.")
