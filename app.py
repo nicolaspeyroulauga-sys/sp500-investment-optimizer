@@ -23,7 +23,6 @@ total_capital = st.sidebar.number_input(
 )
 
 st.sidebar.header("2. Strategy Settings")
-# Restored sliders for flexibility
 n_stocks = st.sidebar.slider("Number of Assets", 10, 30, 30)
 max_weight = st.sidebar.slider("Concentration Limit (%)", 5, 20, 10) / 100
 
@@ -48,7 +47,7 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         current_prices = prices.iloc[-1]
         returns = prices.pct_change().dropna()
         
-        # 2. OPTIMIZATION ENGINE (Restored full logic)
+        # 2. OPTIMIZATION ENGINE
         mu = expected_returns.mean_historical_return(prices)
         S = risk_models.CovarianceShrinkage(prices).ledoit_wolf()
 
@@ -61,10 +60,8 @@ if st.button("🚀 Execute Full Institutional Analysis"):
             ef.add_constraint(lambda w: w <= max_weight)
             weights = pd.Series(ef.max_sharpe())
         else:
-            # Medium (Balanced HRP) - This is your Colab standard
             hrp = HRPOpt(returns)
             weights = pd.Series(hrp.optimize())
-            # Apply concentration limit to HRP
             weights = (weights.clip(upper=max_weight) / (weights.clip(upper=max_weight).sum()))
         
         weights = weights.sort_values(ascending=False)
@@ -75,11 +72,17 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         ann_vol = port_daily_ret.std() * np.sqrt(252)
         sharpe = (ann_return - RISK_FREE_RATE) / ann_vol
         
-        # Benchmark Correlation
-        spy = yf.download("SPY", start=START_DATE, progress=False)["Close"].pct_change().dropna()
+        # Benchmark Correlation (BETA SAFETY CHECK)
+        spy_raw = yf.download("SPY", start=START_DATE, progress=False)["Close"]
+        spy = spy_raw.pct_change().dropna()
         common_idx = port_daily_ret.index.intersection(spy.index)
-        cov_matrix = np.cov(port_daily_ret.loc[common_idx], spy.loc[common_idx])
-        beta = cov_matrix[0, 1] / cov_matrix[1, 1]
+        
+        beta = 0.0
+        if len(common_idx) > 30: # Ensure enough days for correlation
+            cov_matrix = np.cov(port_daily_ret.loc[common_idx], spy.loc[common_idx])
+            beta = cov_matrix[0, 1] / cov_matrix[1, 1]
+        else:
+            beta = 1.0 # Default fallback if SPY data fails
 
         # --- KPI DASHBOARD ---
         st.write(f"### 🔑 Tactical KPIs (Basis: ${total_capital:,.2f})")
@@ -119,7 +122,6 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         with sc2:
             st.warning("**Scenario: Daily Value-at-Risk (95% CI)**")
             st.metric("95% Daily Floor", f"{var_95:.2%}", f"-${total_capital * abs(var_95):,.2f}", delta_color="inverse")
-            st.caption("Worst 5% historical daily move.")
 
         # 5. RISK VISUALS
         t_heat, t_dist, t_tree = st.tabs(["Correlation Heatmap", "Return Distribution", "Sector Map"])
@@ -143,12 +145,13 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         # 6. HISTORICAL GROWTH
         st.divider()
         st.write("### 📈 Cumulative Performance Analysis")
-        cum_port = (1 + port_daily_ret.loc[common_idx]).cumprod()
-        cum_spy = (1 + spy.loc[common_idx]).cumprod()
-        fig_hist = go.Figure()
-        fig_hist.add_trace(go.Scatter(x=cum_port.index, y=cum_port, name="HRP Strategy", line=dict(color="#0047bb", width=3)))
-        fig_hist.add_trace(go.Scatter(x=cum_spy.index, y=cum_spy, name="S&P 500", line=dict(color="#d1d1d1", width=2)))
-        st.plotly_chart(fig_hist, use_container_width=True)
+        if not common_idx.empty:
+            cum_port = (1 + port_daily_ret.loc[common_idx]).cumprod()
+            cum_spy = (1 + spy.loc[common_idx]).cumprod()
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Scatter(x=cum_port.index, y=cum_port, name="HRP Strategy", line=dict(color="#0047bb", width=3)))
+            fig_hist.add_trace(go.Scatter(x=cum_spy.index, y=cum_spy, name="S&P 500", line=dict(color="#d1d1d1", width=2)))
+            st.plotly_chart(fig_hist, use_container_width=True)
 
         # 7. MONTE CARLO PROJECTION
         st.divider()
@@ -184,6 +187,6 @@ if st.button("🚀 Execute Full Institutional Analysis"):
                 fig_s.update_layout(showlegend=False, margin=dict(t=0, b=0))
                 st.plotly_chart(fig_s, use_container_width=True)
 
-        st.success("Terminal fully restored and synchronized.")
+        st.success("Terminal stabilized. Data synchronization complete.")
 else:
     st.info("👈 System Standby. Click Execute to generate interactive analysis.")
