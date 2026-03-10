@@ -7,18 +7,22 @@ import plotly.graph_objects as go
 from pypfopt import expected_returns, risk_models, HRPOpt, EfficientFrontier
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Institutional Quantitative Terminal", layout="wide")
+st.set_config = st.set_page_config(page_title="Quantum Portfolio Terminal", layout="wide")
 
 # --- HEADER ---
 st.title("🏛️ Institutional Quantitative Research Terminal")
-st.markdown("**Lead Developer: Nicolas Peyrou-Lauga** | Portfolio Engineering & Risk Simulation")
+st.markdown("**Lead Developer: Nicolas Peyrou-Lauga** | Portfolio Engineering & Management")
 
 # --- SIDEBAR ---
-st.sidebar.header("1. Core Engine Parameters")
+st.sidebar.header("1. Personal Investment Data")
+# This is the box you requested for your specific capital
+total_capital = st.sidebar.number_input("Current Portfolio Value ($)", min_value=1.0, value=10000.0, step=100.0, help="Enter the exact total amount you and your brother have invested.")
+
+st.sidebar.header("2. Strategy Settings")
 n_stocks = st.sidebar.slider("Number of Assets", 10, 30, 25)
 max_weight = st.sidebar.slider("Concentration Limit (%)", 5, 20, 10) / 100
 
-st.sidebar.header("2. Risk & Optimization")
+st.sidebar.header("3. Risk & Optimization")
 risk_level = st.sidebar.select_slider(
     "Asset Allocation Strategy",
     options=["Low (Min Variance)", "Medium (Balanced HRP)", "High (Max Sharpe)"],
@@ -30,8 +34,8 @@ START_DATE = "2020-01-01"
 RISK_FREE_RATE = 0.02
 UNIVERSE = ["AAPL","MSFT","GOOG","AMZN","NVDA","META","JPM","V","MA","UNH","HD","XOM","AVGO","COST","PEP","ABBV","KO","MRK","BAC","PFE","TMO","CSCO","ADBE","CRM","WMT","MCD","QCOM","ORCL","TXN","INTC"]
 
-if st.button("🚀 Initialize Terminal & Run Stress Tests"):
-    with st.spinner("Processing High-Frequency Data..."):
+if st.button("🚀 Update Terminal & Sync Capital"):
+    with st.spinner("Synchronizing with Live Market Data..."):
         
         # 1. DATA CORE
         all_tickers = UNIVERSE + ["SPY"]
@@ -39,7 +43,7 @@ if st.button("🚀 Initialize Terminal & Run Stress Tests"):
         prices = data[UNIVERSE]
         spy_prices = data["SPY"]
         
-        # 2. FACTOR SELECTION (Momentum + Volatility Adjusted)
+        # 2. FACTOR SELECTION
         returns = prices.pct_change().dropna()
         momentum = prices.shift(21).pct_change(252).iloc[-1]
         vol_vec = returns.std() * np.sqrt(252)
@@ -71,49 +75,42 @@ if st.button("🚀 Initialize Terminal & Run Stress Tests"):
         spy_daily_ret = spy_prices.pct_change().dropna()
         common_idx = port_daily_ret.index.intersection(spy_daily_ret.index)
         
-        # Metrics
         ann_return = np.dot(weights, mu)
         ann_vol = np.sqrt(np.dot(weights.T, np.dot(S, weights)))
         sharpe = (ann_return - RISK_FREE_RATE) / ann_vol
         
-        # Sortino Ratio (Downside Deviation Only)
-        downside_rets = port_daily_ret[port_daily_ret < 0]
-        sortino = (ann_return - RISK_FREE_RATE) / (downside_rets.std() * np.sqrt(252))
-        
-        # Beta & Alpha
         cov_matrix = np.cov(port_daily_ret.loc[common_idx], spy_daily_ret.loc[common_idx])
         beta = cov_matrix[0, 1] / cov_matrix[1, 1]
         alpha = ann_return - (RISK_FREE_RATE + beta * (spy_daily_ret.mean()*252 - RISK_FREE_RATE))
 
-        st.write("### 🔑 Tactical KPIs & Risk-Adjusted Metrics")
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Exp. Return", f"{ann_return:.2%}")
-        m2.metric("Volatility", f"{ann_vol:.2%}")
+        # --- TOP METRICS BAR ---
+        st.write(f"### 🔑 Tactical KPIs (Based on ${total_capital:,.2f} Capital)")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Current Portfolio Value", f"${total_capital:,.2f}")
+        m2.metric("Exp. Annual Growth", f"${total_capital * ann_return:,.2f}", f"{ann_return:.2%}")
         m3.metric("Sharpe Ratio", f"{sharpe:.2f}")
-        m4.metric("Sortino Ratio", f"{sortino:.2f}", help="Return vs Downside risk.")
-        m5.metric("Portfolio Alpha", f"{alpha:.2%}", help="Skill return above benchmark.")
+        m4.metric("Portfolio Beta", f"{beta:.2f}")
 
-        # 5. STRESS TESTING SECTION (What if scenarios)
+        # 5. STRESS TESTING
         st.divider()
-        st.write("### 🌩️ Strategic Stress Tests: Performance Under Duress")
+        st.write("### 🌩️ Strategic Stress Tests: Capital at Risk")
         stress_col1, stress_col2 = st.columns(2)
         
         with stress_col1:
-            st.info("**Scenario 1: Market Crash (-20%)**")
-            crash_impact = beta * -0.20
-            st.write(f"Estimated Portfolio Impact: **{crash_impact:.2%}**")
-            st.caption("Assumes a direct systematic shock to the S&P 500.")
+            crash_pct = beta * -0.20
+            st.info("**Scenario: Market Crash (-20%)**")
+            st.write(f"Estimated Portfolio Impact: **{crash_pct:.2%}**")
+            st.write(f"Projected Capital Loss: **-${total_capital * abs(crash_pct):,.2f}**")
 
         with stress_col2:
-            st.warning("**Scenario 2: Interest Rate Spike**")
-            # Growth stocks usually drop ~10% for every 1% rate hike
-            st.write("Sensitivity to Yield Curve: **Moderate**")
-            st.caption("Calculation based on current concentration in Technology & Growth assets.")
+            var_95 = np.percentile(port_daily_ret, 5)
+            st.warning("**Scenario: Daily Value-at-Risk (95%)**")
+            st.write(f"Worst-case Daily Shift: **{var_95:.2%}**")
+            st.write(f"Daily Capital at Risk: **${total_capital * abs(var_95):,.2f}**")
 
-        # 6. DUAL PERFORMANCE VIEW
+        # 6. PERFORMANCE & SECTOR VIEWS
         st.divider()
-        st.write("### 📊 Performance History & Asset Concentration")
-        tab_perf, tab_conc = st.tabs(["Cumulative Performance", "Sector Heatmap"])
+        tab_perf, tab_conc = st.tabs(["Cumulative Growth (Base $1)", "Sector Distribution Heatmap"])
         
         with tab_perf:
             cum_port = (1 + port_daily_ret.loc[common_idx]).cumprod()
@@ -124,44 +121,47 @@ if st.button("🚀 Initialize Terminal & Run Stress Tests"):
             st.plotly_chart(fig_hist, use_container_width=True)
             
         with tab_conc:
-            # We fetch sectors to create a Treemap
             sectors = []
             for t in weights.index:
                 try: sectors.append(yf.Ticker(t).info.get('sector', 'Other'))
                 except: sectors.append('Other')
-            
             tree_df = pd.DataFrame({"Asset": weights.index, "Weight": weights.values, "Sector": sectors})
             fig_tree = px.treemap(tree_df, path=['Sector', 'Asset'], values='Weight', color='Weight', color_continuous_scale='RdBu')
             st.plotly_chart(fig_tree, use_container_width=True)
 
-        # 7. MONTE CARLO & DEEP DIVE (As before, but even sleeker)
+        # 7. MONTE CARLO (Future Wealth Projection)
         st.divider()
-        st.write("### 🔮 1-Year Probabilistic Outcome Cone")
+        st.write(f"### 🔮 1-Year Future Wealth Projection (Starting at ${total_capital:,.2f})")
         n_sims, n_days = 1000, 252
         sim_paths = np.zeros((n_days, n_sims))
         for i in range(n_sims):
             daily_rets = np.random.normal(port_daily_ret.mean(), port_daily_ret.std(), n_days)
-            sim_paths[:, i] = 100 * (1 + daily_rets).cumprod()
+            sim_paths[:, i] = total_capital * (1 + daily_rets).cumprod()
         
         p5, p50, p95 = np.percentile(sim_paths, 5, axis=1), np.percentile(sim_paths, 50, axis=1), np.percentile(sim_paths, 95, axis=1)
         fig_mc = go.Figure()
         fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p95, line=dict(width=0), showlegend=False))
-        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p5, line=dict(width=0), fill='tonexty', fillcolor='rgba(0, 71, 187, 0.1)', name="90% Risk Band"))
-        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p50, name="Expected Median", line=dict(color="#0047bb", width=3)))
+        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p5, line=dict(width=0), fill='tonexty', fillcolor='rgba(0, 71, 187, 0.1)', name="90% Confidence Interval"))
+        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p50, name="Median Path", line=dict(color="#0047bb", width=3)))
         st.plotly_chart(fig_mc, use_container_width=True)
 
-        # 8. INDIVIDUAL STOCK CARDS
-        st.write("### 🔍 Individual Holding Diagnostics")
+        # 8. INDIVIDUAL ASSET VALUES
+        st.divider()
+        st.write("### 🔍 Your Specific Asset Holdings")
         for ticker in weights.head(5).index.tolist():
             col1, col2 = st.columns([1, 2])
             with col1:
-                t_info = yf.Ticker(ticker).info
                 st.subheader(ticker)
-                st.write(f"**P/E:** {t_info.get('trailingPE', 'N/A')} | **Margin:** {t_info.get('profitMargins', 0)*100:.1f}%")
-                st.caption(t_info.get('longBusinessSummary', '')[:300] + "...")
+                asset_value = total_capital * weights[ticker]
+                st.write(f"**Value in Portfolio:** ${asset_value:,.2f}")
+                st.write(f"**Target Weight:** {weights[ticker]*100:.2f}%")
+                try:
+                    t_info = yf.Ticker(ticker).info
+                    st.caption(f"Sector: {t_info.get('sector')} | P/E: {t_info.get('trailingPE')}")
+                except: pass
             with col2:
-                fig_s = px.line(prices[ticker].tail(252), height=250)
-                fig_s.update_layout(showlegend=False, margin=dict(t=0, b=0))
+                fig_s = px.line(prices[ticker].tail(252), height=200)
+                fig_s.update_layout(showlegend=False, margin=dict(t=0, b=0), yaxis_title="Price")
                 st.plotly_chart(fig_s, use_container_width=True)
 
-        st.success("Full Institutional Analysis Complete.")
+        st.success(f"Capital Sync Complete. Managing ${total_capital:,.2f} across {n_stocks} assets.")
