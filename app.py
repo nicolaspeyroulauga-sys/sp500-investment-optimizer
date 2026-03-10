@@ -42,11 +42,14 @@ UNIVERSE = ["AAPL","MSFT","GOOG","AMZN","NVDA","META","JPM","V","MA","UNH","HD",
 if st.button("🚀 Update Terminal & Sync Capital"):
     with st.spinner("Synchronizing with Live Market Data..."):
         
-        # 1. DATA CORE
+        # 1. DATA CORE (CRASH-PROOFED)
         all_tickers = UNIVERSE + ["SPY"]
-        data = yf.download(all_tickers, start=START_DATE, progress=False)["Close"].dropna(axis=1)
-        prices = data[UNIVERSE]
-        spy_prices = data["SPY"]
+        data = yf.download(all_tickers, start=START_DATE, progress=False)["Close"]
+        
+        # FIX: Only use tickers that were successfully downloaded
+        available_tickers = [t for t in UNIVERSE if t in data.columns]
+        prices = data[available_tickers].dropna(axis=1)
+        spy_prices = data["SPY"].dropna()
         
         # 2. FACTOR SELECTION
         returns = prices.pct_change().dropna()
@@ -57,7 +60,10 @@ if st.button("🚀 Update Terminal & Sync Capital"):
             "qual": (momentum/vol_vec).rank(ascending=False)
         }).dropna()
         factor_df["avg_rank"] = (factor_df["mom"] + factor_df["qual"]) / 2
-        selected = factor_df.sort_values("avg_rank").head(n_stocks).index.tolist()
+        
+        # Ensure we don't ask for more stocks than we successfully downloaded
+        actual_n = min(n_stocks, len(factor_df))
+        selected = factor_df.sort_values("avg_rank").head(actual_n).index.tolist()
         
         # 3. OPTIMIZATION
         mu = expected_returns.mean_historical_return(prices[selected])
@@ -101,38 +107,30 @@ if st.button("🚀 Update Terminal & Sync Capital"):
         
         stress_col1, stress_col2 = st.columns(2)
         
-        # Scenario A: Systematic Shock
         crash_pct = beta * -0.20
         with stress_col1:
             st.info("**Scenario: Market Crash (-20%)**")
             st.write(f"This simulates a broad S&P 500 collapse. Based on your **Beta of {beta:.2f}**, your portfolio is expected to move {beta:.2f}x for every 1% move in the market.")
             st.metric("Estimated Impact", f"{crash_pct:.2%}", f"-${total_capital * abs(crash_pct):,.2f}", delta_color="inverse")
-            st.caption("A Beta < 1.0 suggests your portfolio is more defensive than the market.")
 
-        # Scenario B: Daily VaR
         var_95 = np.percentile(port_daily_ret, 5)
         with stress_col2:
             st.warning("**Scenario: Daily Value-at-Risk (95% CI)**")
             st.write(f"This defines the 'Maximum Likely Loss' in a single day. There is a 95% statistical probability that your daily loss will not exceed this amount.")
             st.metric("95% Daily Floor", f"{var_95:.2%}", f"-${total_capital * abs(var_95):,.2f}", delta_color="inverse")
-            st.caption("Calculated using the Historical Simulation method over the last 5 years.")
 
         # --- RISK VISUALIZATION ---
         st.write("#### 📊 Risk Distribution Analysis")
-        # Creating a histogram of historical returns to show the "Tail Risk"
         fig_risk = px.histogram(port_daily_ret, nbins=100, 
                                title="Historical Daily Returns Distribution",
                                labels={'value': 'Daily Return %'},
                                color_discrete_sequence=['#0047bb'])
-        
-        # Add a vertical line for VaR
         fig_risk.add_vline(x=var_95, line_dash="dash", line_color="red", 
                           annotation_text=f"95% VaR: {var_95:.2%}", 
                           annotation_position="top left")
-        
         fig_risk.update_layout(showlegend=False, height=350)
         st.plotly_chart(fig_risk, use_container_width=True)
-        st.markdown("> **Note:** The red dashed line represents the 'left tail' risk. Any event to the left of this line represents a black-swan or extreme market event occurring in the worst 5% of trading days.")
+        st.markdown("> **Note:** The red dashed line represents the 'left tail' risk. Any event to the left of this line represents a black-swan event occurring in the worst 5% of trading days.")
 
         # 6. PERFORMANCE & SECTOR VIEWS
         st.divider()
@@ -180,16 +178,16 @@ if st.button("🚀 Update Terminal & Sync Capital"):
                 st.subheader(ticker)
                 asset_value = total_capital * weights[ticker]
                 st.write(f"**Current Capital Allocation:** ${asset_value:,.2f}")
-                st.write(f"**Optimal Weight:** {weights[ticker]*100:.2f}%")
                 try:
                     t_info = yf.Ticker(ticker).info
-                    st.caption(f"Sector: {t_info.get('sector')} | P/E: {t_info.get('trailingPE')}")
+                    st.write(f"**P/E Ratio:** {t_info.get('trailingPE', 'N/A')}")
+                    st.caption(t_info.get('longBusinessSummary', '')[:350] + "...")
                 except: pass
             with col2:
                 fig_s = px.line(prices[ticker].tail(252), height=200)
                 fig_s.update_layout(showlegend=False, margin=dict(t=0, b=0), yaxis_title="Price ($)")
                 st.plotly_chart(fig_s, use_container_width=True)
 
-        st.success(f"Analysis Finalized. Strategy: {risk_level} | Scale: ${total_capital:,.2f}")
+        st.success("Analysis Finalized.")
 else:
-    st.info("👈 Set your investment parameters and click the button to generate the terminal analysis.")
+    st.info("👈 Set your parameters and click Run.")
