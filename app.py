@@ -5,8 +5,6 @@ import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
 from pypfopt import expected_returns, risk_models, HRPOpt, EfficientFrontier
-from datetime import datetime
-import time
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Quantum Portfolio Terminal", layout="wide")
@@ -20,8 +18,7 @@ st.sidebar.header("1. Portfolio Capitalization")
 total_capital = st.sidebar.number_input("Total Investment Capital ($)", min_value=1.0, value=10000.0, step=100.0)
 
 st.sidebar.header("2. Strategy Settings")
-# ADDED BACK: The number of assets slider
-n_stocks_slider = st.sidebar.slider("Number of Assets to Analyze", 5, 30, 15)
+n_stocks = st.sidebar.slider("Number of Assets", 5, 30, 30)
 max_weight = st.sidebar.slider("Concentration Limit (%)", 5, 20, 10) / 100
 
 st.sidebar.header("3. Risk & Optimization")
@@ -31,55 +28,22 @@ risk_level = st.sidebar.select_slider(
     value="Medium (Balanced HRP)"
 )
 
-# ELITE UNIVERSE
-FULL_UNIVERSE = ["AAPL","MSFT","GOOGL","AMZN","NVDA","META","JPM","V","MA","UNH","HD","XOM","AVGO","COST","PEP","ABBV","KO","MRK","BAC","PFE","TMO","CSCO","ADBE","CRM","WMT","MCD","QCOM","ORCL","TXN","INTC"]
-SELECTED_UNIVERSE = FULL_UNIVERSE[:n_stocks_slider]
+# FIXED UNIVERSE
+START_DATE = "2020-01-01"
+RISK_FREE_RATE = 0.02
+FULL_UNIVERSE = ["AAPL","MSFT","GOOG","AMZN","NVDA","META","JPM","V","MA","UNH","HD","XOM","AVGO","COST","PEP","ABBV","KO","MRK","BAC","PFE","TMO","CSCO","ADBE","CRM","WMT","MCD","QCOM","ORCL","TXN","INTC"]
+UNIVERSE = FULL_UNIVERSE[:n_stocks]
 
-# --- OPTIMIZED DATA FETCHING ---
-@st.cache_data(ttl=3600)
-def fetch_market_data(tickers):
-    # We no longer pass a custom 'session'. YFinance handles its own browser impersonation now.
-    data = yf.download(tickers, start="2021-01-01", progress=False)["Close"]
-    return data.dropna(axis=1)
-
-@st.cache_data(ttl=3600)
-def fetch_metadata_and_news(tickers):
-    meta = {}
-    news_data = {}
-    
-    for t in tickers:
-        ticker_obj = yf.Ticker(t)
-        try:
-            # We fetch minimal info to avoid hitting rate limits too hard
-            info = ticker_obj.info
-            meta[t] = {
-                "Sector": info.get('sector', 'Other'),
-                "Name": info.get('longName', t),
-                "Summary": info.get('longBusinessSummary', 'No summary available.')[:400] + "...",
-                "PE": info.get('trailingPE', 'N/A')
-            }
-            news_data[t] = ticker_obj.news[:2] 
-            # Subtle delay for server politeness
-            time.sleep(0.2) 
-        except Exception:
-            meta[t] = {"Sector": "Other", "Name": t, "Summary": "N/A", "PE": "N/A"}
-            news_data[t] = []
-            
-    return meta, news_data
-
-# --- EXECUTION ---
 if st.button("🚀 Execute Full Institutional Analysis"):
-    with st.spinner(f"Simulating Institutional Allocation for {n_stocks_slider} Assets..."):
+    with st.spinner("Processing Market Data..."):
         
-        # 1. Historical Data
-        prices = fetch_market_data(SELECTED_UNIVERSE)
+        # 1. DATA CORE
+        data = yf.download(UNIVERSE, start=START_DATE, progress=False)["Close"]
+        prices = data.dropna(axis=1)
         current_prices = prices.iloc[-1]
         returns = prices.pct_change().dropna()
         
-        # 2. Intelligence & News
-        metadata, all_news = fetch_metadata_and_news(list(prices.columns))
-        
-        # 3. Optimization Logic
+        # 2. OPTIMIZATION ENGINE
         mu = expected_returns.mean_historical_return(prices)
         S = risk_models.CovarianceShrinkage(prices).ledoit_wolf()
 
@@ -98,85 +62,115 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         
         weights = weights.sort_values(ascending=False)
 
-        # 4. Global Metrics
+        # 3. PERFORMANCE METRICS
         port_daily_ret = (returns[weights.index] * weights).sum(axis=1)
-        ann_ret = port_daily_ret.mean() * 252
+        ann_return = port_daily_ret.mean() * 252
         ann_vol = port_daily_ret.std() * np.sqrt(252)
-        sharpe = (ann_ret - 0.02) / ann_vol
+        sharpe = (ann_return - RISK_FREE_RATE) / ann_vol
+        
+        spy_raw = yf.download("SPY", start=START_DATE, progress=False)["Close"]
+        spy_rets = spy_raw.pct_change().dropna()
+        combined_df = pd.concat([port_daily_ret, spy_rets], axis=1).dropna()
+        combined_df.columns = ['portfolio', 'benchmark']
+        
+        beta = 1.0
+        if not combined_df.empty and len(combined_df) > 2:
+            matrix = np.cov(combined_df['portfolio'], combined_df['benchmark'])
+            beta = matrix[0, 1] / matrix[1, 1]
 
-        # --- KPI GRID ---
-        st.write(f"### 🔑 Strategic KPI Dashboard")
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Expected Annual Return", f"{ann_ret:.2%}")
-        k2.metric("Annual Volatility", f"{ann_vol:.2%}")
-        k3.metric("Sharpe Ratio", f"{sharpe:.2f}")
+        # --- KPI DASHBOARD ---
+        st.write(f"### 🔑 Tactical KPIs (Basis: ${total_capital:,.2f})")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Ann. Return", f"{ann_return:.2%}")
+        m2.metric("Ann. Volatility", f"{ann_vol:.2%}")
+        m3.metric("Sharpe Ratio", f"{sharpe:.2f}")
+        m4.metric("Portfolio Beta", f"{beta:.2f}")
 
-        # --- MAIN OUTPUT TABS ---
-        t_alloc, t_sector, t_intel = st.tabs(["📊 Allocation Strategy", "🗺️ Sector Distribution", "🔍 Asset Analysis & News"])
+        # --- FRACTIONAL TRADE TABLE ---
+        st.divider()
+        st.write("### 📋 Trade Execution & Asset Allocation")
+        alloc_df = pd.DataFrame(weights, columns=["Weight"])
+        alloc_df["Investment ($)"] = alloc_df["Weight"] * total_capital
+        alloc_df["Current Price ($)"] = current_prices[weights.index]
+        alloc_df["Shares to Buy"] = alloc_df["Investment ($)"] / alloc_df["Current Price ($)"]
+        
+        st.dataframe(alloc_df.style.format({
+            "Weight": "{:.2%}", "Investment ($)": "${:,.2f}", 
+            "Current Price ($)": "${:,.2f}", "Shares to Buy": "{:.3f}"
+        }), use_container_width=True)
 
-        with t_alloc:
-            st.write("### 📋 Trade Execution List")
-            trade_df = pd.DataFrame(weights, columns=["Weight"])
-            trade_df["Investment ($)"] = trade_df["Weight"] * total_capital
-            trade_df["Current Price"] = current_prices[weights.index]
-            trade_df["Shares to Buy"] = trade_df["Investment ($)"] / trade_df["Current Price"]
-            
-            st.table(trade_df.style.format({
-                "Weight": "{:.2%}", "Investment ($)": "${:,.2f}", 
-                "Current Price": "${:,.2f}", "Shares to Buy": "{:.4f}"
-            }))
+        # 4. ENHANCED VISUALS (THE "MORE STUFF" SECTION)
+        st.divider()
+        t_risk, t_intel, t_growth = st.tabs(["🌩️ Risk & Sector Map", "🔍 Individual Asset Intel", "📈 Growth Projections"])
 
-        with t_sector:
-            # Build Sector Analysis Data
-            sector_list = []
-            for t in weights.index:
-                sector_list.append({
-                    "Ticker": t,
-                    "Weight": weights[t],
-                    "Sector": metadata[t]["Sector"]
-                })
-            sector_df = pd.DataFrame(sector_list)
-            
-            # Map sectors to colors for discrete coding
-            fig_sector = px.treemap(
-                sector_df, 
-                path=['Sector', 'Ticker'], 
-                values='Weight',
-                color='Sector',
-                color_discrete_sequence=px.colors.qualitative.Pastel,
-                title="Sectoral Concentration Architecture"
-            )
-            st.plotly_chart(fig_sector, use_container_width=True)
+        with t_risk:
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.write("#### Sector Concentration Architecture")
+                sectors = []
+                # Faster metadata fetching
+                for t in weights.index:
+                    try: sectors.append(yf.Ticker(t).fast_info['lastPrice'] if False else "Sector Loading...") # Placeholder for speed
+                    except: sectors.append('Other')
+                
+                # Manual sector mapping for speed (prevents RateLimitError)
+                sector_map = {
+                    "AAPL":"Tech", "MSFT":"Tech", "NVDA":"Tech", "GOOG":"Comm", "META":"Comm",
+                    "AMZN":"Cons Disc", "HD":"Cons Disc", "MCD":"Cons Disc",
+                    "JPM":"Finance", "V":"Finance", "MA":"Finance", "BAC":"Finance",
+                    "XOM":"Energy", "CVX":"Energy", "UNH":"Health", "ABBV":"Health"
+                }
+                mapped_sectors = [sector_map.get(t, "Other") for t in weights.index]
+                
+                tree_df = pd.DataFrame({"Asset": weights.index, "Weight": weights.values, "Sector": mapped_sectors})
+                fig_tree = px.treemap(tree_df, path=['Sector', 'Asset'], values='Weight', color='Sector',
+                                     color_discrete_sequence=px.colors.qualitative.Pastel)
+                st.plotly_chart(fig_tree, use_container_width=True)
+
+            with c2:
+                st.write("#### Correlation Matrix")
+                corr_matrix = returns[weights.index].corr()
+                fig_heat = px.imshow(corr_matrix, color_continuous_scale='RdBu_r', aspect="auto")
+                st.plotly_chart(fig_heat, use_container_width=True)
 
         with t_intel:
-            st.write("### 🔍 Live Intelligence & News Summaries")
-            for t in weights.index:
-                with st.expander(f"{t} | {metadata[t]['Name']} ({weights[t]:.2%})"):
-                    col_meta, col_news = st.columns([1, 2])
-                    with col_meta:
-                        st.markdown(f"**Sector:** {metadata[t]['Sector']}")
-                        st.markdown(f"**P/E Ratio:** {metadata[t]['PE']}")
-                        st.write("**Asset Profile:**")
-                        st.caption(metadata[t]['Summary'])
-                        # Performance Sparkline
-                        st.line_chart(prices[t].tail(45))
-                    
-                    with col_news:
-                        st.write("**Direct News Feed**")
-                        asset_news = all_news.get(t, [])
-                        if not asset_news:
-                            st.write("No recent strategic news detected.")
-                        for article in asset_news:
-                            # Cleanly formatted news without external link clutter
-                            pub_date = datetime.fromtimestamp(article['providerPublishTime']).strftime('%Y-%m-%d')
-                            st.markdown(f"""
-                            <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-bottom: 5px; border-left: 3px solid #0047bb;">
-                                <small>{pub_date} | {article['publisher']}</small><br>
-                                <strong>{article['title']}</strong>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            st.caption(f"[Read full article on {article['publisher']}]({article['link']})")
+            st.write("#### 📰 Asset Deep-Dive & News Feed")
+            selected_ticker = st.selectbox("Select Asset for Real-Time Intel", weights.index)
+            
+            # This only runs when a stock is selected, preventing blocks
+            ticker_obj = yf.Ticker(selected_ticker)
+            i1, i2 = st.columns([1, 2])
+            with i1:
+                st.write(f"**{selected_ticker} Key Metrics**")
+                info = ticker_obj.fast_info
+                st.metric("Market Cap", f"${info['marketCap']/1e12:.2f}T")
+                st.metric("Day Change", f"{((info['lastPrice']/info['previousClose'])-1):.2%}")
+                st.write("**Asset Summary**")
+                st.caption(ticker_obj.info.get('longBusinessSummary', 'N/A')[:500] + "...")
+            
+            with i2:
+                st.write(f"**Latest {selected_ticker} News**")
+                news = ticker_obj.news[:5]
+                for item in news:
+                    st.markdown(f"**{item['title']}**")
+                    st.caption(f"Source: {item['publisher']} | [Link]({item['link']})")
+                    st.divider()
 
-        st.success("Quant Execution Complete.")
+        with t_growth:
+            st.write("#### 🔮 1-Year Wealth & Monte Carlo Projection")
+            n_sims, n_days = 1000, 252
+            sim_paths = np.zeros((n_days, n_sims))
+            for i in range(n_sims):
+                daily_rets = np.random.normal(port_daily_ret.mean(), port_daily_ret.std(), n_days)
+                sim_paths[:, i] = total_capital * (1 + daily_rets).cumprod()
+            
+            p5, p50, p95 = np.percentile(sim_paths, 5, axis=1), np.percentile(sim_paths, 50, axis=1), np.percentile(sim_paths, 95, axis=1)
+            fig_mc = go.Figure()
+            fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p95, line=dict(width=0), name="Upper Bound (95%)"))
+            fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p5, line=dict(width=0), fill='tonexty', fillcolor='rgba(0, 71, 187, 0.1)', name="Lower Bound (5%)"))
+            fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p50, name="Median Path", line=dict(color="#0047bb", width=3)))
+            st.plotly_chart(fig_mc, use_container_width=True)
+
+        st.success("Analysis complete. Assets synchronized and optimized.")
 else:
-    st.info("👈 System Standby. Click 'Execute' to run the institutional models.")
+    st.info("👈 System Standby. Click Execute to generate interactive analysis.")
