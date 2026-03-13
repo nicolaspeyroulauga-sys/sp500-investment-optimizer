@@ -5,25 +5,41 @@ import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
 from pypfopt import expected_returns, risk_models, HRPOpt, EfficientFrontier
+from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Quantum Portfolio Terminal", layout="wide")
+
+# --- CUSTOM CSS FOR NEWS ---
+st.markdown("""
+    <style>
+    .news-card {
+        background-color: #f1f3f6;
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 5px solid #0047bb;
+        margin-bottom: 10px;
+    }
+    .stock-header {
+        color: #0047bb;
+        font-weight: bold;
+        font-size: 24px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- HEADER ---
 st.title("🏛️ Institutional Quantitative Research Terminal")
 st.markdown("**Lead Developer: Nicolas Peyrou-Lauga** | Portfolio Engineering & Management")
 
+# --- UNIVERSES & SECTOR MAPPING ---
+UNIVERSE = ["AAPL","MSFT","GOOG","AMZN","NVDA","META","JPM","V","MA","UNH","HD","XOM","AVGO","COST","PEP","ABBV","KO","MRK","BAC","PFE","TMO","CSCO","ADBE","CRM","WMT","MCD","QCOM","ORCL","TXN","INTC"]
+
 # --- SIDEBAR ---
 st.sidebar.header("1. Portfolio Capitalization")
-total_capital = st.sidebar.number_input(
-    "Total Investment Capital ($)", 
-    min_value=1.0, 
-    value=10000.0, 
-    step=100.0
-)
+total_capital = st.sidebar.number_input("Total Investment Capital ($)", min_value=1.0, value=10000.0, step=100.0)
 
 st.sidebar.header("2. Strategy Settings")
-n_stocks = st.sidebar.slider("Number of Assets", 10, 30, 30)
 max_weight = st.sidebar.slider("Concentration Limit (%)", 5, 20, 10) / 100
 
 st.sidebar.header("3. Risk & Optimization")
@@ -33,19 +49,41 @@ risk_level = st.sidebar.select_slider(
     value="Medium (Balanced HRP)"
 )
 
-# FIXED UNIVERSE - AS PER RESEARCH
-START_DATE = "2020-01-01"
-RISK_FREE_RATE = 0.02
-UNIVERSE = ["AAPL","MSFT","GOOG","AMZN","NVDA","META","JPM","V","MA","UNH","HD","XOM","AVGO","COST","PEP","ABBV","KO","MRK","BAC","PFE","TMO","CSCO","ADBE","CRM","WMT","MCD","QCOM","ORCL","TXN","INTC"]
+# --- HELPER FUNCTIONS ---
+@st.cache_data(ttl=3600)
+def get_stock_data(tickers):
+    data = yf.download(tickers, start="2020-01-01", progress=False)["Close"]
+    return data.dropna(axis=1)
 
+@st.cache_data(ttl=3600)
+def get_asset_info(tickers):
+    info_dict = {}
+    for t in tickers:
+        ticker_obj = yf.Ticker(t)
+        s_info = ticker_obj.info
+        info_dict[t] = {
+            "Sector": s_info.get('sector', 'Other'),
+            "Full Name": s_info.get('longName', t),
+            "PE": s_info.get('trailingPE', 'N/A'),
+            "DivYield": s_info.get('dividendYield', 0) * 100 if s_info.get('dividendYield') else 0,
+            "Summary": s_info.get('longBusinessSummary', 'No summary available.')[:500] + "..."
+        }
+    return info_dict
+
+def get_stock_news(ticker_symbol):
+    t = yf.Ticker(ticker_symbol)
+    news = t.news[:3]  # Get latest 3 news items
+    return news
+
+# --- MAIN EXECUTION ---
 if st.button("🚀 Execute Full Institutional Analysis"):
-    with st.spinner("Processing Market Data..."):
+    with st.spinner("Synchronizing Market Intelligence..."):
         
         # 1. DATA CORE
-        data = yf.download(UNIVERSE, start=START_DATE, progress=False)["Close"]
-        prices = data.dropna(axis=1)
+        prices = get_stock_data(UNIVERSE)
         current_prices = prices.iloc[-1]
         returns = prices.pct_change().dropna()
+        asset_metadata = get_asset_info(UNIVERSE)
         
         # 2. OPTIMIZATION ENGINE
         mu = expected_returns.mean_historical_return(prices)
@@ -70,106 +108,115 @@ if st.button("🚀 Execute Full Institutional Analysis"):
         port_daily_ret = (returns[weights.index] * weights).sum(axis=1)
         ann_return = port_daily_ret.mean() * 252
         ann_vol = port_daily_ret.std() * np.sqrt(252)
-        sharpe = (ann_return - RISK_FREE_RATE) / ann_vol
+        sharpe = (ann_return - 0.02) / ann_vol
         
-        # --- ROBUST BETA CALCULATION ---
-        spy_raw = yf.download("SPY", start=START_DATE, progress=False)["Close"]
+        spy_raw = yf.download("SPY", start="2020-01-01", progress=False)["Close"]
         spy_rets = spy_raw.pct_change().dropna()
-        
-        # Aligning the two series to solve the ValueError
         combined_df = pd.concat([port_daily_ret, spy_rets], axis=1).dropna()
         combined_df.columns = ['portfolio', 'benchmark']
-        
-        beta = 1.0 # Default
-        if not combined_df.empty and len(combined_df) > 2:
-            matrix = np.cov(combined_df['portfolio'], combined_df['benchmark'])
-            beta = matrix[0, 1] / matrix[1, 1]
+        matrix = np.cov(combined_df['portfolio'], combined_df['benchmark'])
+        beta = matrix[0, 1] / matrix[1, 1]
 
         # --- KPI DASHBOARD ---
         st.write(f"### 🔑 Tactical KPIs (Basis: ${total_capital:,.2f})")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Capital Basis", f"${total_capital:,.2f}")
-        m2.metric("Annual Return", f"{ann_return:.2%}")
-        m3.metric("Annual Volatility", f"{ann_vol:.2%}")
-        m4.metric("Sharpe Ratio", f"{sharpe:.2f}")
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        kpi1.metric("Annual Return", f"{ann_return:.2%}")
+        kpi2.metric("Annual Volatility", f"{ann_vol:.2%}")
+        kpi3.metric("Sharpe Ratio", f"{sharpe:.2f}")
+        kpi4.metric("Beta vs S&P500", f"{beta:.2f}")
 
-        # --- FRACTIONAL TRADE TABLE ---
-        st.divider()
-        st.write("### 📋 Trade Execution & Asset Allocation")
-        alloc_df = pd.DataFrame(weights, columns=["Weight"])
-        alloc_df["Investment ($)"] = alloc_df["Weight"] * total_capital
-        alloc_df["Current Price ($)"] = current_prices[weights.index]
-        alloc_df["Shares to Buy"] = alloc_df["Investment ($)"] / alloc_df["Current Price ($)"]
-        
-        display_df = alloc_df.copy()
-        display_df["Weight"] = display_df["Weight"].map("{:.2%}".format)
-        display_df["Investment ($)"] = display_df["Investment ($)"].map("${:,.2f}".format)
-        display_df["Current Price ($)"] = display_df["Current Price ($)"].map("${:,.2f}".format)
-        display_df["Shares to Buy"] = display_df["Shares to Buy"].map("{:.3f}".format)
-        st.table(display_df)
+        # --- MAIN TABS ---
+        t_allocation, t_risk, t_deep_dive = st.tabs(["📋 Allocation & Performance", "🌩️ Risk Analysis", "🔍 Asset Intelligence Deep-Dive"])
 
-        # 4. STRESS TESTING
-        st.divider()
-        st.write("### 🌩️ Strategic Stress Tests: Capital at Risk")
-        sc1, sc2 = st.columns(2)
-        crash_impact = beta * -0.20
-        var_95 = np.percentile(port_daily_ret, 5)
+        with t_allocation:
+            st.write("### 📋 Trade Execution")
+            alloc_df = pd.DataFrame(weights, columns=["Weight"])
+            alloc_df["Investment ($)"] = alloc_df["Weight"] * total_capital
+            alloc_df["Current Price ($)"] = current_prices[weights.index]
+            alloc_df["Shares"] = alloc_df["Investment ($)"] / alloc_df["Current Price ($)"]
+            
+            # Formatted display
+            f_df = alloc_df.copy()
+            f_df["Weight"] = f_df["Weight"].map("{:.2%}".format)
+            f_df["Investment ($)"] = f_df["Investment ($)"].map("${:,.2f}".format)
+            f_df["Current Price ($)"] = f_df["Current Price ($)"].map("${:,.2f}".format)
+            st.table(f_df)
 
-        with sc1:
-            st.info("**Scenario: Market Crash (-20%)**")
-            st.metric("Estimated Impact", f"{crash_impact:.2%}", f"-${total_capital * abs(crash_impact):,.2f}", delta_color="inverse")
-            st.caption(f"Portfolio Beta: {beta:.2f}")
-
-        with sc2:
-            st.warning("**Scenario: Daily Value-at-Risk (95% CI)**")
-            st.metric("95% Daily Floor", f"{var_95:.2%}", f"-${total_capital * abs(var_95):,.2f}", delta_color="inverse")
-
-        # 5. RISK VISUALS
-        t_heat, t_dist, t_tree = st.tabs(["Correlation Heatmap", "Return Distribution", "Sector Map"])
-        with t_heat:
-            corr_matrix = returns[weights.index].corr()
-            fig_heat = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', aspect="auto")
-            st.plotly_chart(fig_heat, use_container_width=True)
-        with t_dist:
-            fig_risk = px.histogram(port_daily_ret, nbins=100, title="Return Frequency", color_discrete_sequence=['#0047bb'])
-            fig_risk.add_vline(x=var_95, line_dash="dash", line_color="red", annotation_text="95% VaR")
-            st.plotly_chart(fig_risk, use_container_width=True)
-        with t_tree:
-            sectors = []
-            for t in weights.index:
-                try: sectors.append(yf.Ticker(t).info.get('sector', 'Other'))
-                except: sectors.append('Other')
-            tree_df = pd.DataFrame({"Asset": weights.index, "Weight": weights.values, "Sector": sectors})
-            fig_tree = px.treemap(tree_df, path=['Sector', 'Asset'], values='Weight', color='Weight', color_continuous_scale='RdBu')
-            st.plotly_chart(fig_tree, use_container_width=True)
-
-        # 6. HISTORICAL GROWTH
-        st.divider()
-        st.write("### 📈 Cumulative Performance Analysis")
-        if not combined_df.empty:
+            st.divider()
+            st.write("### 📈 Cumulative Growth")
             cum_port = (1 + combined_df['portfolio']).cumprod()
             cum_spy = (1 + combined_df['benchmark']).cumprod()
             fig_hist = go.Figure()
-            fig_hist.add_trace(go.Scatter(x=cum_port.index, y=cum_port, name="HRP Strategy", line=dict(color="#0047bb", width=3)))
-            fig_hist.add_trace(go.Scatter(x=cum_spy.index, y=cum_spy, name="S&P 500", line=dict(color="#d1d1d1", width=2)))
+            fig_hist.add_trace(go.Scatter(x=cum_port.index, y=cum_port, name="Strategic Portfolio", line=dict(color="#0047bb", width=3)))
+            fig_hist.add_trace(go.Scatter(x=cum_spy.index, y=cum_spy, name="S&P 500 Index", line=dict(color="#d1d1d1", width=2)))
             st.plotly_chart(fig_hist, use_container_width=True)
 
-        # 7. MONTE CARLO PROJECTION
-        st.divider()
-        st.write(f"### 🔮 1-Year Wealth Projection (Basis: ${total_capital:,.2f})")
-        n_sims, n_days = 1000, 252
-        sim_paths = np.zeros((n_days, n_sims))
-        for i in range(n_sims):
-            daily_rets = np.random.normal(port_daily_ret.mean(), port_daily_ret.std(), n_days)
-            sim_paths[:, i] = total_capital * (1 + daily_rets).cumprod()
-        
-        p5, p50, p95 = np.percentile(sim_paths, 5, axis=1), np.percentile(sim_paths, 50, axis=1), np.percentile(sim_paths, 95, axis=1)
-        fig_mc = go.Figure()
-        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p95, line=dict(width=0), showlegend=False))
-        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p5, line=dict(width=0), fill='tonexty', fillcolor='rgba(0, 71, 187, 0.1)', name="90% Confidence Interval"))
-        fig_mc.add_trace(go.Scatter(x=list(range(n_days)), y=p50, name="Median Projection", line=dict(color="#0047bb", width=3)))
-        st.plotly_chart(fig_mc, use_container_width=True)
+        with t_risk:
+            st.write("### 🏛️ Sectoral Architecture")
+            # Build tree_df with metadata
+            tree_data = []
+            for t in weights.index:
+                tree_data.append({
+                    "Asset": t,
+                    "Weight": weights[t],
+                    "Sector": asset_metadata[t]["Sector"]
+                })
+            tree_df = pd.DataFrame(tree_data).sort_values(by="Sector")
+            
+            fig_tree = px.treemap(
+                tree_df, 
+                path=['Sector', 'Asset'], 
+                values='Weight',
+                color='Sector', # Color coded by sector
+                title="Portfolio Sector Concentration",
+                color_discrete_sequence=px.colors.qualitative.Prism
+            )
+            st.plotly_chart(fig_tree, use_container_width=True)
+            
+            st.divider()
+            st.write("### 🌩️ Systematic Stress Testing")
+            var_95 = np.percentile(port_daily_ret, 5)
+            s1, s2 = st.columns(2)
+            s1.metric("Market Crash Impact (-20%)", f"-${total_capital * abs(beta * 0.20):,.2f}")
+            s2.metric("95% Daily Value-at-Risk", f"-${total_capital * abs(var_95):,.2f}")
 
-        st.success("Analysis complete. Beta calculated using synchronized time-series.")
+        with t_deep_dive:
+            st.write("### 🔍 Individual Asset Intelligence & Live News")
+            st.info("Directly pulling latest SEC filings and market news summaries for your portfolio.")
+            
+            # Using expanders to keep 30 stocks manageable
+            for ticker in weights.index:
+                with st.expander(f"{ticker} - {asset_metadata[ticker]['Full Name']} ({weights[ticker]:.2%})"):
+                    col_info, col_news = st.columns([1, 2])
+                    
+                    with col_info:
+                        st.markdown(f"**Sector:** {asset_metadata[ticker]['Sector']}")
+                        st.markdown(f"**P/E Ratio:** {asset_metadata[ticker]['PE']}")
+                        st.markdown(f"**Div. Yield:** {asset_metadata[ticker]['DivYield']:.2f}%")
+                        st.write("**Business Summary:**")
+                        st.caption(asset_metadata[ticker]['Summary'])
+                        
+                        # Sparkline mini-chart
+                        st.write("**30-Day Trend**")
+                        spark_data = prices[ticker].tail(30)
+                        st.line_chart(spark_data)
+
+                    with col_news:
+                        st.write("**Latest Strategic News Headlines**")
+                        news_items = get_stock_news(ticker)
+                        if not news_items:
+                            st.write("No recent news found.")
+                        for item in news_items:
+                            pub_time = datetime.fromtimestamp(item['providerPublishTime']).strftime('%Y-%m-%d %H:%M')
+                            st.markdown(f"""
+                            <div class="news-card">
+                                <strong>{item['title']}</strong><br>
+                                <small>Source: {item['publisher']} | {pub_time}</small><br>
+                                <p style='font-size: 13px; margin-top: 5px;'>{item.get('summary', 'Click link for full coverage...')[:300]}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            st.link_button(f"View Full Story: {item['publisher']}", item['link'])
+
+        st.success("Analysis complete. All 30 assets mapped and analyzed.")
 else:
     st.info("👈 System Standby. Click Execute to generate interactive analysis.")
