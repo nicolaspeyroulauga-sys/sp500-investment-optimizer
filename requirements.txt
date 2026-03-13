@@ -1,7 +1,6 @@
 streamlit
 pandas
 numpy
-yfinance>=1.2.0
-plotly
+yfinance
 PyPortfolioOpt
-curl_cffi
+plotly
